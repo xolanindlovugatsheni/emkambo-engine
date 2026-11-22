@@ -39,8 +39,11 @@ def main(argv=None):
         print(json.dumps({"trades": len(trades), "true_params": p.as_dict()}, indent=2))
     elif a.cmd == "run":
         out = run_haircuts(load_config(a.config))
-        print(pd.read_csv(out / "haircuts.csv")[["tenor_days", "haircut", "advance_rate", "es_rel_err",
-                                                 "es_band_lo", "es_band_hi", "tally_checks_pass"]].to_string(index=False))
+        table = pd.read_csv(out / "haircuts.csv")
+        cols = ["tenor_days", "haircut", "advance_rate", "es_rel_err", "es_band_lo", "es_band_hi", "tally_checks_pass"]
+        if "haircut_floor_holds" in table.columns:
+            cols += ["haircut_floor_holds", "haircut_floor_fails", "floor_dependence"]
+        print(table[cols].to_string(index=False))
         print(f"\nrun written to {out}")
     elif a.cmd == "backtest":
         out = run_backtest_cfg(load_config(a.config))

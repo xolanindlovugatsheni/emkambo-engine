@@ -13,17 +13,24 @@ Seasonal drift modes:
   adverse - use it only when it lowers the price (default: a lender should not
             lend against an expected seasonal rise)
   none    - ignore seasonality in the horizon
+
+Floor price (optional, for maize): with a FloorSpec the lender's sale value is
+max(P_H, V_floor) when the floor holds. Three haircuts are then reported:
+floor_holds, floor_fails (identical to the no-floor haircut for the same seed)
+and blended at the specified p_fail. The headline haircut is the blended one.
+See floor.py.
 """
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, replace
 
 import numpy as np
 import pandas as pd
 
 from .calibrate import CalibrationResult
 from .engine import simulate_horizon
+from .floor import FloorSpec, floor_scenarios
 from .params import RegimeOUParams
 from .seasonal import SeasonalFit
 from .tallies import weighted_var_es, batch_tally, figure_of_merit
@@ -36,6 +43,7 @@ class HaircutSpec:
     liquidation_lag_days: int = 21
     storage_usd_per_t_day: float = 0.0
     seasonal_mode: str = "adverse"
+    floor: FloorSpec | None = None
 
     @property
     def horizon(self) -> int:
@@ -73,15 +81,37 @@ def seasonal_drift(seasonal: SeasonalFit | None, origin: pd.Timestamp, horizon: 
 
 
 def losses(y_h, origin: OriginState, ds: float, spec: HaircutSpec) -> np.ndarray:
+    """Market-only loss (no floor)."""
     ratio = np.exp(ds + y_h - origin.y0)
     return 1.0 - ratio + spec.storage_usd_per_t_day * spec.horizon / origin.price_usd
 
 
+def scenario_losses(y_h, origin: OriginState, ds: float, spec: HaircutSpec, rng) -> dict:
+    """Loss arrays by scenario: {'base'} without a floor, or the three floor scenarios.
+
+    Floor draws come from rng after the price simulation, so the price paths and
+    the no-floor result are unchanged when a floor is added.
+    """
+    storage = spec.storage_usd_per_t_day * spec.horizon / origin.price_usd
+    ratio = np.exp(ds + y_h - origin.y0)
+    if spec.floor is None:
+        return {"base": 1.0 - ratio + storage}
+    sale = floor_scenarios(ratio, origin.price_usd, spec.floor, rng)
+    return {k: 1.0 - v + storage for k, v in sale.items()}
+
+
+def _primary(scen: dict) -> str:
+    return "blended" if "blended" in scen else "base"
+
+
 def _batch(params: RegimeOUParams, origin, ds, spec, n, rng, bias, tilt):
+    """Returns {scenario: (var, es, L)} and the weights."""
     y_h, w, _ = simulate_horizon(params, origin.y0, origin.p_stress0, spec.horizon, n, rng, bias, tilt)
-    L = losses(y_h, origin, ds, spec)
-    var, es = weighted_var_es(L, w, spec.alpha)
-    return var, es, L, w
+    out = {}
+    for k, L in scenario_losses(y_h, origin, ds, spec, rng).items():
+        var, es = weighted_var_es(L, w, spec.alpha)
+        out[k] = (var, es, L)
+    return out, w
 
 
 def compute_haircut(cal: CalibrationResult, seasonal: SeasonalFit | None, origin: OriginState,
@@ -98,13 +128,15 @@ def compute_haircut(cal: CalibrationResult, seasonal: SeasonalFit | None, origin
     point_seeds, unc_seeds, theta_seed = root.spawn(3)
 
     t0 = time.perf_counter()
-    vars_, ess = [], []
+    vars_, ess = {}, {}
     for ss in point_seeds.spawn(mc.batches):
-        v, e, *_ = _batch(cal.params, origin, ds, spec, mc.paths_per_batch, np.random.default_rng(ss), mc.bias, mc.tilt)
-        vars_.append(v); ess.append(e)
+        res, _ = _batch(cal.params, origin, ds, spec, mc.paths_per_batch, np.random.default_rng(ss), mc.bias, mc.tilt)
+        for k, (v, e, _) in res.items():
+            vars_.setdefault(k, []).append(v); ess.setdefault(k, []).append(e)
     elapsed = time.perf_counter() - t0
-    es_tally = batch_tally(ess)
-    var_tally = batch_tally(vars_)
+    key = _primary(ess)
+    es_tally = batch_tally(ess[key])
+    var_tally = batch_tally(vars_[key])
 
     out = {
         "alpha": spec.alpha,
@@ -122,33 +154,40 @@ def compute_haircut(cal: CalibrationResult, seasonal: SeasonalFit | None, origin
         "tilt": mc.tilt,
     }
 
+    es_basis = {k: float(np.mean(v)) for k, v in ess.items()}
     if mc.param_uncertainty:
         theta_rng = np.random.default_rng(theta_seed)
-        L_all, w_all, es_b = [], [], []
+        L_all, w_all, es_b = {}, [], []
         for ss in unc_seeds.spawn(mc.batches):
             th = theta_rng.multivariate_normal(cal.theta, cal.cov_theta)
             try:
                 p = RegimeOUParams.from_theta(th)
             except ValueError:
                 p = cal.params
-            _, e, L, w = _batch(p, origin, ds, spec, mc.paths_per_batch, np.random.default_rng(ss), mc.bias, mc.tilt)
-            es_b.append(e); L_all.append(L); w_all.append(w)
-        _, es_pred = weighted_var_es(np.concatenate(L_all), np.concatenate(w_all), spec.alpha)
-        out["es_predictive"] = es_pred
+            res, w = _batch(p, origin, ds, spec, mc.paths_per_batch, np.random.default_rng(ss), mc.bias, mc.tilt)
+            for k, (_, _, L) in res.items():
+                L_all.setdefault(k, []).append(L)
+            w_all.append(w)
+            es_b.append(res[key][1])
+        w_cat = np.concatenate(w_all)
+        es_basis = {k: weighted_var_es(np.concatenate(v), w_cat, spec.alpha)[1] for k, v in L_all.items()}
+        out["es_predictive"] = es_basis[key]
         out["es_band_5_95"] = [float(np.percentile(es_b, 5)), float(np.percentile(es_b, 95))]
-        haircut_basis = es_pred
-    else:
-        haircut_basis = es_tally.mean
 
-    out["haircut"] = float(np.clip(haircut_basis, 0.0, 1.0))
+    out["haircut"] = float(np.clip(es_basis[key], 0.0, 1.0))
     out["advance_rate"] = 1.0 - out["haircut"]
+    if spec.floor is not None:
+        out["floor"] = spec.floor.as_dict()
+        out["haircut_floor_holds"] = float(np.clip(es_basis["floor_holds"], 0.0, 1.0))
+        out["haircut_floor_fails"] = float(np.clip(es_basis["floor_fails"], 0.0, 1.0))
+        out["floor_dependence"] = out["haircut_floor_fails"] - out["haircut_floor_holds"]
     return out
 
 
 def haircut_table(cal, seasonal, origin, base_spec: HaircutSpec, tenors, mc: MCSettings) -> pd.DataFrame:
     rows = []
     for tenor in tenors:
-        spec = HaircutSpec(**{**asdict(base_spec), "tenor_days": int(tenor)})
+        spec = replace(base_spec, tenor_days=int(tenor))
         r = compute_haircut(cal, seasonal, origin, spec, mc)
         rows.append({
             "tenor_days": tenor,
@@ -165,5 +204,8 @@ def haircut_table(cal, seasonal, origin, base_spec: HaircutSpec, tenors, mc: MCS
             "es_band_hi": r.get("es_band_5_95", [None, None])[1],
             "var_point": r["var_point"],
             "fom": r["fom"],
+            **({"haircut_floor_holds": r["haircut_floor_holds"],
+                "haircut_floor_fails": r["haircut_floor_fails"],
+                "floor_dependence": r["floor_dependence"]} if "floor" in r else {}),
         })
     return pd.DataFrame(rows)

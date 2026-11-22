@@ -15,6 +15,17 @@ haircut:
   liquidation_lag_days: 21       # to be replaced with observed bank recovery times
   storage_usd_per_t_day: 0.10    # from ZMX warehouse tariffs
   seasonal_mode: adverse         # full | adverse | none
+  floor:                         # GMB floor producer price (maize only; keep disabled for soya)
+    enabled: false
+    price_usd_per_t: 364.75      # 2025/26 floor producer price
+    zig_share: 0.5               # ASSUMPTION: share paid in ZiG; confirm with GMB/lenders
+    zig_market_discount: 0.10    # ASSUMPTION: interbank vs market rate gap
+    zig_depreciation_annual: 0.20  # ASSUMPTION
+    zig_vol_annual: 0.25         # ASSUMPTION
+    payment_delay_days: 45       # ASSUMPTION: delivery to payment
+    funding_rate_annual: 0.15    # ASSUMPTION: lender USD funding rate
+    delivery_cost_usd_per_t: 10.0  # ASSUMPTION: transport and handling to depot
+    p_fail: 0.20                 # ASSUMPTION: probability GMB does not buy or pay; run a range
 
 monte_carlo:
   batches: 40

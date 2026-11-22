@@ -14,6 +14,7 @@ import yaml
 from . import __version__
 from .backtest import run_backtest
 from .calibrate import calibrate
+from .floor import FloorSpec
 from .haircut import HaircutSpec, MCSettings, OriginState, haircut_table
 from .index import build_index
 from .seasonal import fit_seasonal
@@ -79,6 +80,13 @@ def _run_dir(cfg, kind) -> Path:
     return d
 
 
+def floor_from_cfg(f: dict | None) -> FloorSpec | None:
+    """Build a FloorSpec from the haircut.floor config block; None if absent or disabled."""
+    if not f or not f.get("enabled", False):
+        return None
+    return FloorSpec(**{k: v for k, v in f.items() if k != "enabled"})
+
+
 def run_haircuts(cfg: dict) -> Path:
     idx, report = prepare(cfg)
     m = cfg.get("model", {})
@@ -86,7 +94,8 @@ def run_haircuts(cfg: dict) -> Path:
     h = cfg["haircut"]
     spec = HaircutSpec(alpha=h["alpha"], liquidation_lag_days=h["liquidation_lag_days"],
                        storage_usd_per_t_day=h.get("storage_usd_per_t_day", 0.0),
-                       seasonal_mode=h.get("seasonal_mode", "adverse"))
+                       seasonal_mode=h.get("seasonal_mode", "adverse"),
+                       floor=floor_from_cfg(h.get("floor")))
     mcs = cfg.get("monte_carlo", {})
     mc = MCSettings(batches=mcs.get("batches", 40), paths_per_batch=mcs.get("paths_per_batch", 25_000),
                     bias=mcs.get("bias", 4.0), tilt=mcs.get("tilt", 0.75), param_uncertainty=mcs.get("param_uncertainty", True),
