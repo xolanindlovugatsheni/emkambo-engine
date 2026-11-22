@@ -1,5 +1,7 @@
 # Emkambo stochastic engine
 
+**New here? Start with the [welcome wiki](docs/wiki/Home.md).**
+
 Collateral haircut engine for warehouse-receipt lending. Mveli Labs (Pvt) Ltd, Project Emkambo.
 
 For a commodity and a loan tenor, the engine returns the **haircut**: the expected shortfall, at level α, of the collateral loss over tenor plus liquidation lag. Every haircut ships with its Monte Carlo relative error, the calibration-uncertainty band, and a reproducible run manifest.
