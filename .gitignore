@@ -1,0 +1,17 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.venv/
+venv/
+build/
+dist/
+
+# Run outputs and real data never go in the repository
+runs/
+demo/runs/
+data/
+!demo/data/
+*.parquet
+config.yaml
+!demo/config.yaml

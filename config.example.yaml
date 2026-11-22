@@ -1,0 +1,33 @@
+# Emkambo run configuration. Paths are relative to this file.
+output_dir: runs
+
+data:
+  commodity: maize
+  trades: data/trades.csv        # columns: date, commodity, quantity_t, price, currency
+  fx:                            # optional: date, zig_per_usd (needed to use ZiG trades)
+
+model:
+  harmonics: 2                   # annual Fourier harmonics in the seasonal curve
+
+haircut:
+  alpha: 0.99                    # expected-shortfall confidence level
+  tenors_days: [30, 60, 90, 180]
+  liquidation_lag_days: 21       # to be replaced with observed bank recovery times
+  storage_usd_per_t_day: 0.10    # from ZMX warehouse tariffs
+  seasonal_mode: adverse         # full | adverse | none
+
+monte_carlo:
+  batches: 40
+  paths_per_batch: 25000
+  bias: 4.0                      # regime biasing into stress (1 = off)
+  tilt: 0.75                     # shock tilting toward losses, in standard deviations (0 = off)
+  param_uncertainty: true        # propagate calibration covariance into the haircut
+  seed: 20261018
+
+backtest:
+  alpha: 0.95                    # lower level so a short history still has exceedances to count
+  tenor_days: 60
+  min_train_days: 730
+  recal_every: 4
+  paths: 40000
+  seed: 7
